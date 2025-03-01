@@ -1,0 +1,4 @@
+geopandas
+matplotlib
+pyarrow
+s3fs
