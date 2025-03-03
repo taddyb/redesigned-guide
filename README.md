@@ -21,7 +21,8 @@ Shapefile Arguments:
   -i [IDS ...], --ids [IDS ...]
                         Ids to use for boundary selection
   
-> [!NOTE] If IDS are not provided, then this utility will iterate over all geometries in the shapefile, naming each output based on the FIELD value assoicated with that geometry.
+>[!NOTE] 
+>If IDS are not provided, then this utility will iterate over all geometries in the shapefile, naming each output based on the FIELD value assoicated with that geometry.
 
 Plotting Arguments:
   --plot, -p            Plot the extracted elements
@@ -29,13 +30,15 @@ Plotting Arguments:
   --save, -s            Save the plot to a file
   --interactive, -I     Use interactive plotting
 
-> [!NOTE] If interactive plotting, the resulting subset will be displayed for each geometry being processed.  Once the plot is closed, then the utility will proceed to the next.
+>[!NOTE]
+>If interactive plotting, the resulting subset will be displayed for each geometry being processed.  Once the plot is closed, then the utility will proceed to the next.
 
 When saving plots, the selected plots will be saved to png files with the FIELD value prepended to the filename.
 
 When complete, a geopackage containing the subset of NextGen Hydrofabric elements for each input boundary will be generated and saved, with the FIELD value of each boundary prepended to the filename.
 
-> [!IMPORTANT] When used with Lynker Spatial hydrofabric, either locally or via S3, the resulting subsets are governed by the following data liscence:
+>[!IMPORTANT] 
+>When used with Lynker Spatial hydrofabric, either locally or via S3, the resulting subsets are governed by the following data liscence:
 
 ```
 The Cloud Native Water Resource Modeling Hydrofabric dataset is made available under the Open Database License (ODbL).
