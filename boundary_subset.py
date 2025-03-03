@@ -224,7 +224,7 @@ if __name__ == "__main__":
     parser.add_argument('gpkg', type=Path, help='Path to geopackage (may be a valid s3 path)')
     plt_group = parser.add_argument_group('Plotting Arguments') 
     plt_group.add_argument('--plot', '-p', action='store_true', help='Plot the extracted elements')
-    plt_group.add_argument('--plot-wide', '-w', action='store_true', help='Plot the extracted elements with a wider view')
+    plt_group.add_argument('--plot-wide', '-w', action='store_true', help='Plot the extracted elements with a wider view (the bounding box of the boundary geometry being processed)')
     plt_group.add_argument('--save', '-s', action='store_true', help='Save the plot to a file')
     plt_group.add_argument('--interactive', '-I', action='store_true', help='Use interactive plotting')
     parser.add_argument('--ghost', '-g', action='store_true', help='Include the downstream flowpath in the extracted elements')
