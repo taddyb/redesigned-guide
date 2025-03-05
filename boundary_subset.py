@@ -270,6 +270,12 @@ if __name__ == "__main__":
         # Subset all layers
         all = get_sub_layers(_to_open, mainstem, ghost=terminal_nexus)
         
+        # Compute the percent coverage
+        total_divide_area = all['divides']['geometry'].area.sum()
+        # SHOULD only be a single area, so take the first...
+        boundary_area = boundary['geometry'].area.values[0]
+        print(f"Percent of boundary area covered by hydrofabric subset: {(total_divide_area/boundary_area)*100:.2f}%")
+
         # If asked, plot the extracted flowpaths and divides
         if args.plot or args.plot_wide:
             print("Plotting...")
