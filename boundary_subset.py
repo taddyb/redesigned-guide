@@ -289,7 +289,8 @@ if __name__ == "__main__":
                 save = name
             plot_sub(boundary, all['flowpaths'], all['divides'], div_clipped, fp_clipped, crosses=which, save=save, interactive=args.interactive)
 
-        print("Writing...")
+        print(f"Writing subset to {name}_{terminal_nexus}.gpkg")
+        print()
         # Write to a new geopackage
         for table, layer in all.items():
             gpd.GeoDataFrame(layer).to_file(f"{name}_{terminal_nexus}.gpkg", layer=table, driver='GPKG')
