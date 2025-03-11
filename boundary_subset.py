@@ -18,13 +18,18 @@ Currently supports NextGen hydrofabric v2.2
 """
 # TODO reuse global layers for multiple boundaries when getting sub layers
 # TODO save both wide and exact plots
+import multiprocessing as mp
+from functools import partial
+import os
 
 import argparse
 from collections import deque
 from collections.abc import Iterable
 import geopandas as gpd
 from matplotlib import pyplot as plt
+import numpy as np
 import pandas as pd
+from tqdm import tqdm
 from pathlib import Path
 import s3fs
 from typing import Optional, Mapping
@@ -215,12 +220,128 @@ def get_sub_layers(gpkg: Path, mainstem: Iterable[str], ghost:Optional[str]=None
 
     return {"flowpaths": sub_flowpaths.reset_index(), "divides": sub_divides, "divide-attributes": divide_attrs, "network": sub_network.reset_index(), **l1, **l2, **l3}
 
+
+def process_boundary(
+    name, 
+    boundary_geom,  # Pass just the geometry, not the whole GeoDataFrame
+    gpkg_path,      # Pass path instead of opened file
+    args,
+    output_dir,
+    crs
+):    
+    try:
+        print(f"Extracting hydrofabric for {name}")
+        # Create GeoDataFrame from geometry
+        boundary = gpd.GeoDataFrame([], crs=crs, geometry=[boundary_geom])
+        xmin, ymin, xmax, ymax = boundary.total_bounds
+        
+        # Connect to file
+        if str(gpkg_path).startswith('s3:'):
+            _s3 = s3fs.S3FileSystem(profile='default')
+            _to_open = _s3.open(str(gpkg_path).replace("s3:/", "s3://"))
+        else:
+            _to_open = gpkg_path
+        
+        # Load data locally with spatial filter
+        # Add small buffer to ensure we get all features at the edges
+        buffer = max((xmax - xmin), (ymax - ymin)) * 0.05
+        bbox = (xmin - buffer, ymin - buffer, xmax + buffer, ymax + buffer)
+        
+        # Load only what's needed with spatial filtering
+        network = gpd.read_file(_to_open, layer='network', bbox=bbox, use_arrow=True)
+        flowpaths = gpd.read_file(_to_open, layer='flowpaths', bbox=bbox, use_arrow=True).set_index('id')
+        fp_clipped = flowpaths.cx[xmin:xmax, ymin:ymax]
+        
+        # Load divides only if needed
+        if args.plot_wide:
+            divides = gpd.read_file(_to_open, layer='divides', bbox=bbox, use_arrow=True)
+            div_clipped = divides.cx[xmin:xmax, ymin:ymax]
+        else:
+            divides = None
+            div_clipped = None
+            
+        # Find mainstem ids
+        mainstem, terminal_nexus, which = find_mainstem(boundary, fp_clipped, network)
+        ghost = None
+        if args.ghost:
+            ghost = terminal_nexus
+            
+        # Subset all layers
+        all_layers = get_sub_layers(_to_open, mainstem, ghost=terminal_nexus)
+        
+        # Compute the percent coverage
+        total_divide_area = all_layers['divides']['geometry'].area.sum()
+        boundary_area = boundary['geometry'].area.values[0]
+        coverage_pct = (total_divide_area/boundary_area)*100
+        print(f"Percent of boundary area covered by hydrofabric subset: {coverage_pct:.2f}%")
+
+        # If asked, plot the extracted flowpaths and divides
+        if args.plot or args.plot_wide:
+            print("Plotting...")
+            save = None
+            if args.save:
+                save = name
+            plot_sub(boundary, all_layers['flowpaths'], all_layers['divides'], 
+                     div_clipped, fp_clipped, crosses=which, save=save, 
+                     interactive=args.interactive)
+
+        # Write to a new geopackage
+        output_file = output_dir / f"{name}_{terminal_nexus}.gpkg"
+        print(f"Writing subset to {output_file}")
+        for table, layer in all_layers.items():
+            gpd.GeoDataFrame(layer).to_file(output_file, layer=table, driver='GPKG')
+            
+        # Return success info
+        return {
+            "name": name,
+            "success": True,
+            "terminal_nexus": terminal_nexus,
+            "coverage_pct": float(coverage_pct)
+        }
+        
+    except IndexError:
+        print(f"Found point which has no connections for {name}. Skipping...")
+        return {"name": name, "success": False, "error": "No connections found"}
+    except Exception as e:
+        import traceback
+        print(f"Error processing boundary {name}: {e}")
+        print(traceback.format_exc())
+        return {"name": name, "success": False, "error": str(e)}
+
+
+def init_worker():
+    """Initialize worker process to disable interactive mode"""
+    import matplotlib.pyplot as plt
+    plt.ioff()  # Turn off interactive mode in worker processes
+    # Silence some common warnings in worker processes
+    import warnings
+    warnings.filterwarnings("ignore")
+    
+
+def prepare_args_for_processing(boundaries, gpkg_path, args, output_dir):
+    """Prepare arguments for parallel processing"""
+    process_args = []
+    
+    for name, boundary in boundaries.iterrows():
+        # Just pass the boundary geometry and other necessary parameters
+        process_args.append((
+            name,
+            boundary.geometry,
+            gpkg_path,
+            args,
+            output_dir,
+            boundaries.crs
+        ))
+    
+    return process_args
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Extract NextGen Hydrofbric Elements from Shapefile Geometries. Currently only support v2.2 hydrofabric')
     shp_group = parser.add_argument_group('Shapefile Arguments')
     shp_group.add_argument('boundaries', type=Path, help='Path to file containing boundaries to use')
     shp_group.add_argument('-f', '--field', type=str, help='Field to use for boundary selection and/or naming', required=True)
-    shp_group.add_argument('-i', '--ids', type=str, nargs='*', help='Ids to use for boundary selection')
+    shp_group.add_argument('-i', '--ids', type=str, help='Ids to use for boundary selection')
     parser.add_argument('gpkg', type=Path, help='Path to geopackage (may be a valid s3 path)')
     plt_group = parser.add_argument_group('Plotting Arguments') 
     plt_group.add_argument('--plot', '-p', action='store_true', help='Plot the extracted elements')
@@ -245,7 +366,7 @@ if __name__ == "__main__":
         output_dir.mkdir(exist_ok=True)
     else:
         output_dir = Path("./")
-
+        
     # use_arrow here makes these reads 2-3x faster, especially for
     # reading the network table
     network = gpd.read_file(_to_open, layer='network', use_arrow=True)
@@ -261,43 +382,44 @@ if __name__ == "__main__":
     boundaries[args.field] = boundaries[args.field].astype(str)
     boundaries.set_index(args.field, inplace=True)
     if args.ids:
-        boundaries = boundaries.loc[args.ids]
-
-    for name, boundary in boundaries.iterrows():
-        print(f"Extracting hydrofabric for {name}")
-        boundary = gpd.GeoDataFrame([], crs=boundaries.crs, geometry=[boundary.geometry])
-        xmin, ymin, xmax, ymax = boundary.total_bounds
-    
-        fp_clipped = flowpaths.cx[xmin:xmax, ymin:ymax]
-        # Find mainstem ids
-        mainstem, terminal_nexus, which = find_mainstem(boundary, fp_clipped, network)
-        ghost = None
-        if args.ghost:
-            ghost = terminal_nexus
-        # Subset all layers
-        all = get_sub_layers(_to_open, mainstem, ghost=terminal_nexus)
+        try:
+            ids = pd.read_csv(args.ids)["STAID"].values
+            ids = np.array([str(_id).zfill(8) for _id in ids])
+        except FileNotFoundError:
+            ids = args.ids
+        boundaries = boundaries.loc[ids]
         
-        # Compute the percent coverage
-        total_divide_area = all['divides']['geometry'].area.sum()
-        # SHOULD only be a single area, so take the first...
-        boundary_area = boundary['geometry'].area.values[0]
-        print(f"Percent of boundary area covered by hydrofabric subset: {(total_divide_area/boundary_area)*100:.2f}%")
-
-        # If asked, plot the extracted flowpaths and divides
-        if args.plot or args.plot_wide:
-            print("Plotting...")
-            save = None
-            if not args.plot_wide:
-                div_clipped = None
-                fp_clipped = None
-            else:
-                div_clipped = divides.cx[xmin:xmax, ymin:ymax]
-            if args.save:
-                save = name
-            plot_sub(boundary, all['flowpaths'], all['divides'], div_clipped, fp_clipped, crosses=which, save=save, interactive=args.interactive)
-
-        print(f"Writing subset to {name}_{terminal_nexus}.gpkg")
-        print()
-        # Write to a new geopackage
-        for table, layer in all.items():
-            gpd.GeoDataFrame(layer).to_file(output_dir / f"{name}_{terminal_nexus}.gpkg", layer=table, driver='GPKG')
+    boundaries = boundaries.iloc[::-1]
+    
+        # Prepare the arguments for multiprocessing
+    process_args = []
+    for name, boundary in boundaries.iterrows():
+        # Convert geometry to WKB to avoid serialization issues
+        geometry_wkb = boundary.geometry.wkb
+        
+        # Add to process args
+        process_args.append((
+            name,
+            geometry_wkb,
+            boundaries.crs,
+            args.gpkg,
+            output_dir,
+            args,
+        ))
+        
+    n_processes = max(1, os.cpu_count() - 4)
+    print(f"Processing {len(process_args)} boundaries with {n_processes} processes")
+    
+    # Prepare arguments for multiprocessing
+    process_args = prepare_args_for_processing(boundaries, gpkg, args, output_dir)
+    
+    
+    # Create a multiprocessing pool
+    with mp.Pool(processes=n_processes, initializer=init_worker) as pool:
+        # Process boundaries in parallel with progress bar
+        results = list(tqdm(
+            pool.starmap(process_boundary, process_args),
+            total=len(process_args),
+            desc="Processing boundaries"
+        ))
+    
