@@ -262,43 +262,54 @@ def process_boundary(
             
         # Find mainstem ids
         mainstem, terminal_nexus, which = find_mainstem(boundary, fp_clipped, network)
-        ghost = None
-        if args.ghost:
-            ghost = terminal_nexus
-            
-        # Subset all layers
-        all_layers = get_sub_layers(_to_open, mainstem, ghost=terminal_nexus)
-        
-        # Compute the percent coverage
-        total_divide_area = all_layers['divides']['geometry'].area.sum()
-        boundary_area = boundary['geometry'].area.values[0]
-        coverage_pct = (total_divide_area/boundary_area)*100
-        print(f"Percent of boundary area covered by hydrofabric subset: {coverage_pct:.2f}%")
-
-        # If asked, plot the extracted flowpaths and divides
-        if args.plot or args.plot_wide:
-            print("Plotting...")
-            save = None
-            if args.save:
-                save = name
-            plot_sub(boundary, all_layers['flowpaths'], all_layers['divides'], 
-                     div_clipped, fp_clipped, crosses=which, save=save, 
-                     interactive=args.interactive)
-
-        # Write to a new geopackage
         output_file = output_dir / f"{name}_{terminal_nexus}.gpkg"
-        print(f"Writing subset to {output_file}")
-        for table, layer in all_layers.items():
-            gpd.GeoDataFrame(layer).to_file(output_file, layer=table, driver='GPKG')
+        if output_file.exists():
+            print("gpkg exits, skipping")
+            # Return success info
+            return {
+                "name": f"EXISTS-{name}",
+                "success": True,
+                "terminal_nexus": terminal_nexus,
+                "coverage_pct": float(0)
+            }
+        else:
+            ghost = None
+            if args.ghost:
+                ghost = terminal_nexus
+                
+            # Subset all layers
+            all_layers = get_sub_layers(_to_open, mainstem, ghost=terminal_nexus)
             
-        # Return success info
-        return {
-            "name": name,
-            "success": True,
-            "terminal_nexus": terminal_nexus,
-            "coverage_pct": float(coverage_pct)
-        }
-        
+            # Compute the percent coverage
+            total_divide_area = all_layers['divides']['geometry'].area.sum()
+            boundary_area = boundary['geometry'].area.values[0]
+            coverage_pct = (total_divide_area/boundary_area)*100
+            print(f"Percent of boundary area covered by hydrofabric subset: {coverage_pct:.2f}%")
+
+            # If asked, plot the extracted flowpaths and divides
+            if args.plot or args.plot_wide:
+                print("Plotting...")
+                save = None
+                if args.save:
+                    save = name
+                plot_sub(boundary, all_layers['flowpaths'], all_layers['divides'], 
+                        div_clipped, fp_clipped, crosses=which, save=save, 
+                        interactive=args.interactive)
+
+            # Write to a new geopackage
+            
+            print(f"Writing subset to {output_file}")
+            for table, layer in all_layers.items():
+                gpd.GeoDataFrame(layer).to_file(output_file, layer=table, driver='GPKG')
+                
+            # Return success info
+            return {
+                "name": name,
+                "success": True,
+                "terminal_nexus": terminal_nexus,
+                "coverage_pct": float(coverage_pct)
+            }
+            
     except IndexError:
         print(f"Found point which has no connections for {name}. Skipping...")
         return {"name": name, "success": False, "error": "No connections found"}
@@ -387,7 +398,11 @@ if __name__ == "__main__":
             ids = np.array([str(_id).zfill(8) for _id in ids])
         except FileNotFoundError:
             ids = args.ids
-        boundaries = boundaries.loc[ids]
+        try:
+            boundaries = boundaries.loc[ids]
+        except KeyError:
+            valid_ids = [id for id in ids if id in boundaries.index]
+            boundaries = boundaries.loc[valid_ids]
         
     boundaries = boundaries.iloc[::-1]
     
@@ -407,7 +422,7 @@ if __name__ == "__main__":
             args,
         ))
         
-    n_processes = max(1, os.cpu_count() - 4)
+    n_processes = 8
     print(f"Processing {len(process_args)} boundaries with {n_processes} processes")
     
     # Prepare arguments for multiprocessing
